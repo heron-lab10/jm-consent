@@ -36,15 +36,18 @@
   <button id="deny" type="button">Deny</button>
 </div>
 
+<!-- Single self-contained UMD bundle so SRI covers all SDK code (the +esm build
+     pulls further modules that an integrity attribute cannot cover). Exposes window.supabase. -->
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.118.0/dist/umd/supabase.js"
+        integrity="sha384-TcHRA3zBbn+Lexh5n+Oil4guNPOS3rjNDpGRAN46u/s/mB2IZ50ceC6TYDU2yvgK"
+        crossorigin="anonymous"></script>
 <script type="module">
   // Per-Mind config. To reuse this page for another Mind, change these two lines.
   // The anon/publishable key is public by design; RLS keeps data service-role only.
   const SUPABASE_URL = "https://uoykclqdsbhzhtgcebct.supabase.co";
   const SUPABASE_ANON_KEY = "sb_publishable_HUOPFHDt1aRl3koo-dB96w_O_XiLCaK";
 
-  import { createClient } from "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.118.0/+esm";
-
-  const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+  const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
   const $ = (id) => document.getElementById(id);
 
   // All server-supplied values go through textContent, never innerHTML.
@@ -60,6 +63,9 @@
   function go(url) { status("Redirecting…"); show(null); window.location.assign(url); }
 
   const authorizationId = new URLSearchParams(window.location.search).get("authorization_id");
+  // The SDK puts the id into the request path unescaped; anything outside this
+  // set could steer the signed-in user's token to another /auth/v1 endpoint.
+  const AUTHORIZATION_ID_RE = /^[A-Za-z0-9_-]+$/;
 
   async function loadConsent() {
     clearError();
@@ -112,6 +118,10 @@
     if (!authorizationId) {
       status("");
       return fail("Missing authorization_id");
+    }
+    if (!AUTHORIZATION_ID_RE.test(authorizationId)) {
+      status("");
+      return fail("Invalid authorization_id");
     }
     const { data: { session } } = await supabase.auth.getSession();
     if (!session) {
