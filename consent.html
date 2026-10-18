@@ -47,7 +47,24 @@
   const SUPABASE_URL = "https://uoykclqdsbhzhtgcebct.supabase.co";
   const SUPABASE_ANON_KEY = "sb_publishable_HUOPFHDt1aRl3koo-dB96w_O_XiLCaK";
 
-  const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+  // Drop any session an earlier version of this page persisted, before the
+  // client exists. Collect first: removing while indexing shifts the keys.
+  try {
+    const stale = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (key && key.startsWith("sb-") && key.endsWith("-auth-token")) stale.push(key);
+    }
+    for (const key of stale) localStorage.removeItem(key);
+  } catch {
+    // Storage blocked: nothing persisted to remove.
+  }
+
+  // The session lives in memory only and dies with the tab; a reload asks for
+  // the password again.
+  const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+    auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
+  });
   const $ = (id) => document.getElementById(id);
 
   // All server-supplied values go through textContent, never innerHTML.
@@ -73,7 +90,11 @@
     const { data, error } = await supabase.auth.oauth.getAuthorizationDetails(authorizationId);
     if (error) { status(""); return fail(error); }
     // Already consented: the server hands back the final redirect directly.
-    if (data.redirect_url) return go(data.redirect_url);
+    // Nothing more needs the session, so revoke it before leaving.
+    if (data.redirect_url) {
+      await supabase.auth.signOut({ scope: "local" }).catch(() => {});
+      return go(data.redirect_url);
+    }
 
     $("app-name").textContent = data.client?.name ?? "Unknown app";
     $("scope").textContent = data.scope || "(none)";
@@ -87,8 +108,14 @@
     $("approve").disabled = $("deny").disabled = true;
     const fn = approve ? "approveAuthorization" : "denyAuthorization";
     const { data, error } = await supabase.auth.oauth[fn](authorizationId, { skipBrowserRedirect: true });
+    // Revoke this page's refresh token server-side whatever the outcome. Local
+    // scope only: global would revoke every session of the user, likely
+    // including those issued to OAuth clients.
+    await supabase.auth.signOut({ scope: "local" }).catch(() => {});
     if (error) {
+      // The session is gone, so retrying needs a fresh sign-in.
       $("approve").disabled = $("deny").disabled = false;
+      show("login");
       return fail(error);
     }
     go(data.redirect_url);
@@ -110,7 +137,7 @@
   $("deny").addEventListener("click", () => decide(false));
   $("signout").addEventListener("click", async (e) => {
     e.preventDefault();
-    await supabase.auth.signOut();
+    await supabase.auth.signOut({ scope: "local" });
     show("login");
   });
 
