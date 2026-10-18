@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>Authorize access</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 28rem; margin: 3rem auto; padding: 0 1rem; line-height: 1.5; }
+  label, input, button { display: block; width: 100%; box-sizing: border-box; }
+  input { margin: 0.25rem 0 1rem; padding: 0.5rem; font-size: 1rem; }
+  button { padding: 0.6rem; font-size: 1rem; margin-bottom: 0.5rem; cursor: pointer; }
+  #error { color: #b00020; white-space: pre-wrap; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<h1>Authorize access</h1>
+
+<p id="status">Loading…</p>
+<p id="error" hidden></p>
+
+<form id="login" hidden>
+  <label for="email">Email</label>
+  <input id="email" type="email" autocomplete="username" required>
+  <label for="password">Password</label>
+  <input id="password" type="password" autocomplete="current-password" required>
+  <button type="submit">Sign in</button>
+</form>
+
+<div id="consent" hidden>
+  <p><strong id="app-name"></strong> wants to access your account.</p>
+  <p>Requested scope: <code id="scope"></code></p>
+  <p>Signed in as <span id="user-email"></span> (<a href="#" id="signout">sign out</a>)</p>
+  <button id="approve" type="button">Approve</button>
+  <button id="deny" type="button">Deny</button>
+</div>
+
+<script type="module">
+  // Per-Mind config. To reuse this page for another Mind, change these two lines.
+  // The anon/publishable key is public by design; RLS keeps data service-role only.
+  const SUPABASE_URL = "https://uoykclqdsbhzhtgcebct.supabase.co";
+  const SUPABASE_ANON_KEY = "sb_publishable_HUOPFHDt1aRl3koo-dB96w_O_XiLCaK";
+
+  import { createClient } from "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.118.0/+esm";
+
+  const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+  const $ = (id) => document.getElementById(id);
+
+  // All server-supplied values go through textContent, never innerHTML.
+  function show(section) {
+    for (const id of ["login", "consent"]) $(id).hidden = id !== section;
+  }
+  function status(text) { $("status").textContent = text; $("status").hidden = !text; }
+  function fail(err) {
+    $("error").textContent = err?.message ?? String(err);
+    $("error").hidden = false;
+  }
+  function clearError() { $("error").hidden = true; }
+  function go(url) { status("Redirecting…"); show(null); window.location.assign(url); }
+
+  const authorizationId = new URLSearchParams(window.location.search).get("authorization_id");
+
+  async function loadConsent() {
+    clearError();
+    status("Loading authorization request…");
+    const { data, error } = await supabase.auth.oauth.getAuthorizationDetails(authorizationId);
+    if (error) { status(""); return fail(error); }
+    // Already consented: the server hands back the final redirect directly.
+    if (data.redirect_url) return go(data.redirect_url);
+
+    $("app-name").textContent = data.client?.name ?? "Unknown app";
+    $("scope").textContent = data.scope || "(none)";
+    $("user-email").textContent = data.user?.email ?? "";
+    status("");
+    show("consent");
+  }
+
+  async function decide(approve) {
+    clearError();
+    $("approve").disabled = $("deny").disabled = true;
+    const fn = approve ? "approveAuthorization" : "denyAuthorization";
+    const { data, error } = await supabase.auth.oauth[fn](authorizationId, { skipBrowserRedirect: true });
+    if (error) {
+      $("approve").disabled = $("deny").disabled = false;
+      return fail(error);
+    }
+    go(data.redirect_url);
+  }
+
+  $("login").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    clearError();
+    const { error } = await supabase.auth.signInWithPassword({
+      email: $("email").value.trim(),
+      password: $("password").value,
+    });
+    if (error) return fail(error);
+    $("password").value = "";
+    await loadConsent();
+  });
+
+  $("approve").addEventListener("click", () => decide(true));
+  $("deny").addEventListener("click", () => decide(false));
+  $("signout").addEventListener("click", async (e) => {
+    e.preventDefault();
+    await supabase.auth.signOut();
+    show("login");
+  });
+
+  async function main() {
+    if (!authorizationId) {
+      status("");
+      return fail("Missing authorization_id");
+    }
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session) {
+      status("");
+      return show("login");
+    }
+    await loadConsent();
+  }
+
+  main().catch(fail);
+</script>
+</body>
+</html>
